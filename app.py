@@ -1,41 +1,55 @@
+# app.py
 import streamlit as st
-from src.tabs import (
-    experiment_designer_tab,
-    dilution_master_tab,
-    serial_dilution_planner_tab,
-    ic50_planner_tab, # NEW import
-    reagent_manager_tab
-)
+from pathlib import Path
+import importlib
+import re
 
-def main():
+st.set_page_config(layout="wide", page_title="Lab Toolkit")
+st.title("🧰 Lab Toolkit")
+
+def get_tabs():
     """
-    Main function to run the Streamlit application UI and logic.
+    Scans the 'tabs' directory, imports each tab as a module,
+    and returns a dictionary of tabs.
     """
-    st.set_page_config(layout="wide", page_title="Lab Toolkit")
-    st.title("🧰 Lab Toolkit")
+    tabs_dict = {}
+    # Find all .py files in the 'tabs' directory
+    tab_files = sorted(Path("tabs").glob("*.py"))
+    
+    for tab_file in tab_files:
+        # Skip the __init__.py file
+        if tab_file.name == "__init__.py":
+            continue
 
-    # Define the main tabs of the application, including the new IC50 Planner
-    tab_titles = [
-        "🧪 Experiment Designer",
-        "💧 Dilution Master",
-        "📋 Serial Dilution Planner",
-        "🎯 IC50 Planner", # NEW tab
-        "📚 Reagent Manager"
-    ]
+        # Dynamically import the module
+        module_name = f"tabs.{tab_file.stem}"
+        try:
+            tab_module = importlib.import_module(module_name)
+            
+            # Use regex to clean up the filename for the tab title
+            # This removes the "01_", "02_" prefixes and replaces underscores with spaces
+            clean_name = re.sub(r"^\d+_", "", tab_file.stem).replace("_", " ")
 
-    tabs = st.tabs(tab_titles)
+            # Each tab file must have a 'run_tab()' function
+            if hasattr(tab_module, "run_tab"):
+                tabs_dict[clean_name] = tab_module.run_tab
+        except Exception as e:
+            st.error(f"Error loading tab {tab_file.name}: {e}")
+            
+    return tabs_dict
 
-    # Load the UI and logic for each tab from the imported functions
-    with tabs[0]:
-        experiment_designer_tab()
-    with tabs[1]:
-        dilution_master_tab()
-    with tabs[2]:
-        serial_dilution_planner_tab()
-    with tabs[3]:
-        ic50_planner_tab() # NEW function call
-    with tabs[4]:
-        reagent_manager_tab()
+# Get all the tab functions
+tab_functions = get_tabs()
+tab_titles = list(tab_functions.keys())
 
-if __name__ == "__main__":
-    main()
+# Create the tabs in Streamlit
+if tab_titles:
+    st_tabs = st.tabs(tab_titles)
+    
+    # Render the content for each tab
+    for tab, title in zip(st_tabs, tab_titles):
+        with tab:
+            # Call the run_tab() function from the imported module
+            tab_functions[title]()
+else:
+    st.warning("No tabs found in the 'tabs' directory.")
