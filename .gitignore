@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# User-generated data
+reagents.json
+*.csv
+
+# IDE specific
+.vscode/
+.idea/
