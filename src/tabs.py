@@ -357,66 +357,96 @@ def ic50_planner_tab():
     st.markdown("---")
 
     if st.button("🚀 Generate Cascading Protocol", type="primary"):
+        # Convert all inputs to base units (M and L) for calculation
         main_stock_base = stock_conc_val * MOLARITY_CONVERSIONS[stock_conc_unit]
         highest_conc_base = highest_conc_val * MOLARITY_CONVERSIONS[highest_conc_unit]
-        est_ic50_base = est_ic50_val * MOLARITY_CONVERSIONS[target_conc_unit]
         final_vol_base = final_vol_val * VOLUME_CONVERSIONS[final_vol_unit]
 
-        dense_concs, upper_concs, lower_concs = [], [], []
-        if num_dense > 0:
-            num_dense_above = int(np.ceil((num_dense - 1) / 2))
-            num_dense_below = int(np.floor((num_dense - 1) / 2))
-            dense_concs.append(est_ic50_base)
-            for _ in range(num_dense_above): dense_concs.append(dense_concs[-1] * dense_factor)
-            for _ in range(num_dense_below): dense_concs.insert(0, dense_concs[0] / dense_factor)
+        # --- REWRITTEN: Concentration Generation Logic ---
+        upper_sparse_concs, dense_concs, lower_sparse_concs = [], [], []
         
+        # 1. Generate Upper Sparse concentrations
         if num_sparse_upper > 0:
-            current_conc = dense_concs[-1] if dense_concs else highest_conc_base
-            for _ in range(num_sparse_upper): upper_concs.append(current_conc * (sparse_factor ** (_ + 1)))
-
-        if num_sparse_lower > 0:
-            current_conc = dense_concs[0] if dense_concs else est_ic50_base
-            for _ in range(num_sparse_lower): lower_concs.append(current_conc / (sparse_factor ** (_ + 1)))
-
-        final_concentrations = sorted(lower_concs + dense_concs + upper_concs, reverse=True)
-        if final_concentrations: final_concentrations[0] = highest_conc_base
+            current_conc = highest_conc_base
+            for _ in range(num_sparse_upper):
+                upper_sparse_concs.append(current_conc)
+                current_conc /= sparse_factor
         
+        # 2. Generate Dense concentrations
+        if num_dense > 0:
+            # Start dense series from the next dilution step after the upper sparse series
+            start_conc_dense = (upper_sparse_concs[-1] / sparse_factor) if upper_sparse_concs else highest_conc_base
+            current_conc = start_conc_dense
+            for _ in range(num_dense):
+                dense_concs.append(current_conc)
+                current_conc /= dense_factor
+
+        # 3. Generate Lower Sparse concentrations
+        if num_sparse_lower > 0:
+            # Start lower series from the next dilution step after the dense series
+            start_conc_lower = (dense_concs[-1] / dense_factor) if dense_concs else highest_conc_base
+            current_conc = start_conc_lower
+            for _ in range(num_sparse_lower):
+                lower_sparse_concs.append(current_conc)
+                current_conc /= sparse_factor
+
+        final_concentrations = upper_sparse_concs + dense_concs + lower_sparse_concs
+        
+        # --- Helper for protocol generation ---
         def generate_protocol_section(title, concs, factor, start_stock_conc, start_stock_name):
             if not concs: return None
+            
             st.markdown(f"#### {title}")
             intermediate_stock_conc = concs[0]
+
             st.markdown(f"**Step 1: Prepare Starting Stock for this Range (`{format_molarity(intermediate_stock_conc)}`)**")
-            transfer_vol = final_vol_base / (factor - 1)
+            # For the very first section, the stock is prepared from the main stock
+            if title == "Upper Sparse Range Protocol":
+                # This is a direct dilution to make the first intermediate stock
+                stock_vol_needed = (intermediate_stock_conc * final_vol_base) / start_stock_conc
+                diluent_vol_needed = final_vol_base - stock_vol_needed
+                st.success(f"To create the first working stock for this series:\n"
+                           f"- Take **{stock_vol_needed * 1e6:.2f} µL** of your **{start_stock_name}**.\n"
+                           f"- Add **{diluent_vol_needed * 1e6:.2f} µL** of solvent.\n"
+                           f"This makes your `{format_molarity(intermediate_stock_conc)}` stock.")
+            else:
+                # For subsequent sections, the stock is from the extra tube of the previous dilution
+                st.success(f"Take the **{start_stock_name}** you prepared in the previous step to use as the stock for this range.")
+
+            st.markdown("**Step 2: Perform Serial Dilution**")
+            transfer_vol = final_vol_base / (factor - 1) if factor > 1 else final_vol_base
             intermediate_tube_vol = final_vol_base + transfer_vol
             stock_for_first_tube = intermediate_tube_vol / factor
-            st.success(f"Take the **{start_stock_name}** you prepared in the previous step.\n\n"
-                       f"You will need at least **{stock_for_first_tube * 1e6:.2f} µL** of it for the next step.")
-            st.markdown("**Step 2: Perform Serial Dilution**")
             diluent_for_intermediate_tubes = intermediate_tube_vol - stock_for_first_tube
             diluent_for_last_tube = final_vol_base - (final_vol_base / factor)
+
             is_last_stage = (title == "Lower Sparse Range Protocol")
-            num_tubes = len(concs) if is_last_stage else len(concs) + 1
-            extra_tube_text = "" if is_last_stage else f" (Tube {num_tubes} will be the stock for the next range)"
+            num_tubes = len(concs) if is_last_stage or (title == "Dense Range Protocol" and not lower_sparse_concs) else len(concs) + 1
+            extra_tube_text = "" if is_last_stage or (title == "Dense Range Protocol" and not lower_sparse_concs) else f" (Tube {num_tubes} will be the stock for the next range)"
+
             protocol_steps = [f"1. **Prepare {num_tubes} tubes.**{extra_tube_text}"]
             if num_tubes > 1:
                 protocol_steps.append(f"2. **Tubes 1 to {num_tubes-1}:** Add **{diluent_for_intermediate_tubes * 1e6:.2f} µL** of solvent.")
                 protocol_steps.append(f"3. **Last Tube ({num_tubes}):** Add **{diluent_for_last_tube * 1e6:.2f} µL** of solvent.")
             else:
                  protocol_steps.append(f"2. **To Tube 1:** Add **{diluent_for_last_tube * 1e6:.2f} µL** of solvent.")
+            
             protocol_steps.append(f"4. **Tube 1:** Add **{stock_for_first_tube * 1e6:.2f} µL** of your `{format_molarity(intermediate_stock_conc)}` stock. Mix well.")
             protocol_steps.append(f"5. **Transfer {transfer_vol * 1e6:.2f} µL** sequentially from Tube 1 to Tube {num_tubes}.")
+            
             st.info("\n".join(protocol_steps))
-            return concs[-1] / factor if not is_last_stage else None
+            
+            return concs[-1] / factor if not is_last_stage and not (title == "Dense Range Protocol" and not lower_sparse_concs) else None
 
         st.subheader("Results")
-        upper_sparse_concs = sorted([c for c in final_concentrations if c >= (dense_concs[-1] if dense_concs else highest_conc_base)], reverse=True)
+        # --- Generate Protocol for each section ---
         dense_stock_conc = generate_protocol_section("Upper Sparse Range Protocol", upper_sparse_concs, sparse_factor, main_stock_base, f"Main Stock ({format_molarity(main_stock_base)})")
-        dense_final_concs = sorted([c for c in final_concentrations if (dense_concs[0] if dense_concs else -1) <= c < (upper_sparse_concs[-1] if upper_sparse_concs else 0)], reverse=True)
-        if dense_final_concs:
-            lower_stock_conc = generate_protocol_section("Dense Range Protocol", dense_final_concs, dense_factor, dense_stock_conc, f"'{format_molarity(dense_stock_conc)}' Stock (from previous step)")
-        lower_sparse_concs = sorted([c for c in final_concentrations if c < (dense_final_concs[-1] if dense_final_concs else -1)], reverse=True)
+        if dense_concs:
+            lower_stock_conc = generate_protocol_section("Dense Range Protocol", dense_concs, dense_factor, dense_stock_conc, f"'{format_molarity(dense_stock_conc)}' Stock (from previous step)")
         if lower_sparse_concs:
             generate_protocol_section("Lower Sparse Range Protocol", lower_sparse_concs, sparse_factor, lower_stock_conc, f"'{format_molarity(lower_stock_conc)}' Stock (from previous step)")
+
+        # --- Display Final Summary Table ---
         summary_data = [{"Point #": i + 1, "Final Concentration": format_molarity(c)} for i, c in enumerate(final_concentrations)]
         df_summary = pd.DataFrame(summary_data)
         st.markdown("#### Final Concentration Summary")
